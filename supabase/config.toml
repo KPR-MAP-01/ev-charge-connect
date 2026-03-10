@@ -1,1 +1,4 @@
 project_id = "igpselrwpbtktsuggrql"
+
+[functions.ev-assistant]
+verify_jwt = false
