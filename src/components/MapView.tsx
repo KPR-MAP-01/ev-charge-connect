@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Tables } from "@/integrations/supabase/types";
+import { calculateDistance, formatDistance, estimateDriveTime } from "@/lib/distance";
 
 // Fix default marker icons for Leaflet + bundlers
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -12,9 +13,16 @@ L.Icon.Default.mergeOptions({
 });
 
 const evIcon = L.divIcon({
-  html: `<div style="background:hsl(142,71%,45%);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3)"><svg width="14" height="14" fill="white" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 10 10-12h-9l1-10z"/></svg></div>`,
-  iconSize: [28, 28],
-  iconAnchor: [14, 14],
+  html: `<div style="background:hsl(142,71%,45%);width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3)"><svg width="16" height="16" fill="white" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 10 10-12h-9l1-10z"/></svg></div>`,
+  iconSize: [32, 32],
+  iconAnchor: [16, 16],
+  className: "",
+});
+
+const userIcon = L.divIcon({
+  html: `<div style="background:hsl(213,90%,55%);width:20px;height:20px;border-radius:50%;border:3px solid white;box-shadow:0 0 12px rgba(59,130,246,0.6)"></div>`,
+  iconSize: [20, 20],
+  iconAnchor: [10, 10],
   className: "",
 });
 
@@ -22,6 +30,7 @@ interface MapViewProps {
   stations: Tables<"stations">[];
   center?: [number, number];
   zoom?: number;
+  userLocation?: [number, number] | null;
   onStationClick?: (station: Tables<"stations">) => void;
   onMapClick?: (lat: number, lng: number) => void;
   selectedPosition?: [number, number] | null;
@@ -32,20 +41,26 @@ export function MapView({
   stations,
   center = [20.5937, 78.9629],
   zoom = 5,
+  userLocation,
   onStationClick,
   onMapClick,
   selectedPosition,
-  className = "h-[500px]",
+  className = "h-[70vh]",
 }: MapViewProps) {
   const mapRef = useRef<L.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
   const selectedMarkerRef = useRef<L.Marker | null>(null);
+  const userMarkerRef = useRef<L.Marker | null>(null);
+
+  // Determine effective center: prefer user location
+  const effectiveCenter = userLocation || center;
+  const effectiveZoom = userLocation ? 13 : zoom;
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
-    mapRef.current = L.map(containerRef.current).setView(center, zoom);
+    mapRef.current = L.map(containerRef.current).setView(effectiveCenter, effectiveZoom);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(mapRef.current);
@@ -64,18 +79,51 @@ export function MapView({
     };
   }, []);
 
-  // Update markers when stations change
+  // Re-center when user location becomes available
+  useEffect(() => {
+    if (mapRef.current && userLocation) {
+      mapRef.current.setView(userLocation, 13);
+    }
+  }, [userLocation]);
+
+  // User location marker
+  useEffect(() => {
+    if (!mapRef.current) return;
+    if (userMarkerRef.current) {
+      userMarkerRef.current.remove();
+      userMarkerRef.current = null;
+    }
+    if (userLocation) {
+      userMarkerRef.current = L.marker(userLocation, { icon: userIcon })
+        .bindPopup('<strong>📍 Your Location</strong>')
+        .addTo(mapRef.current);
+    }
+  }, [userLocation]);
+
+  // Update station markers
   useEffect(() => {
     if (!markersRef.current) return;
     markersRef.current.clearLayers();
 
     stations.forEach((station) => {
       const marker = L.marker([station.latitude, station.longitude], { icon: evIcon });
+
+      let distanceHtml = "";
+      if (userLocation) {
+        const dist = calculateDistance(userLocation[0], userLocation[1], station.latitude, station.longitude);
+        const time = estimateDriveTime(dist);
+        distanceHtml = `<span style="color:#3b82f6;font-size:12px">📍 ${formatDistance(dist)} · ~${time} min drive</span><br/>`;
+      }
+
       marker.bindPopup(
-        `<div style="font-family:system-ui;min-width:160px">
+        `<div style="font-family:system-ui;min-width:180px">
           <strong style="font-size:14px">${station.name}</strong><br/>
+          ${distanceHtml}
           <span style="color:#666;font-size:12px">⚡ ${station.charger_type}</span><br/>
-          <span style="color:#666;font-size:12px">🔌 ${station.available_slots} slots available</span>
+          <span style="color:#666;font-size:12px">🔌 ${station.available_slots} slots available</span><br/>
+          <div style="margin-top:8px;display:flex;gap:6px">
+            <a href="https://www.google.com/maps/dir/?api=1&destination=${station.latitude},${station.longitude}" target="_blank" rel="noopener" style="background:#22c55e;color:white;padding:4px 10px;border-radius:6px;font-size:12px;text-decoration:none">Navigate</a>
+          </div>
         </div>`
       );
       if (onStationClick) {
@@ -83,7 +131,7 @@ export function MapView({
       }
       markersRef.current!.addLayer(marker);
     });
-  }, [stations, onStationClick]);
+  }, [stations, onStationClick, userLocation]);
 
   // Handle selected position marker (for admin map picker)
   useEffect(() => {
